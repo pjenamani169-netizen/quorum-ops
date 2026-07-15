@@ -777,48 +777,66 @@ export default function App() {
     message: row.message
   });
 
-  // --- Fetch all data from Supabase on mount ---
+  // --- Fetch all data from Supabase on mount + polling fallback ---
+  const fetchOrders = async () => {
+    const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+    if (error) { console.error('Orders fetch error:', error); return; }
+    if (data) setOrders(data.map(mapOrder));
+  };
+
+  const fetchNotifs = async () => {
+    const { data, error } = await supabase.from('notifications').select('*').order('created_at', { ascending: false });
+    if (error) { console.error('Notifications fetch error:', error); return; }
+    if (data) setNotifications(data.map(mapNotif));
+  };
+
+  const fetchStaff = async () => {
+    const { data, error } = await supabase.from('staff_members').select('*').order('created_at', { ascending: true });
+    if (error) { console.error('Staff fetch error:', error); return; }
+    if (data) setStaffMembers(data.map(mapStaff));
+  };
+
   useEffect(() => {
+    // Initial fetch
     const fetchAll = async () => {
       setDbLoading(true);
-      const [{ data: staffData }, { data: ordersData }, { data: notifsData }] = await Promise.all([
-        supabase.from('staff_members').select('*').order('created_at', { ascending: true }),
-        supabase.from('orders').select('*').order('created_at', { ascending: false }),
-        supabase.from('notifications').select('*').order('created_at', { ascending: false })
-      ]);
-      if (staffData) setStaffMembers(staffData.map(mapStaff));
-      if (ordersData) setOrders(ordersData.map(mapOrder));
-      if (notifsData) setNotifications(notifsData.map(mapNotif));
+      await Promise.all([fetchOrders(), fetchNotifs(), fetchStaff()]);
       setDbLoading(false);
     };
     fetchAll();
 
-    // --- Real-time subscriptions ---
+    // --- Polling fallback: re-fetch orders every 4 seconds ---
+    const pollInterval = setInterval(async () => {
+      await fetchOrders();
+      await fetchNotifs();
+    }, 4000);
+
+    // --- Real-time subscriptions (instant push when available) ---
     const ordersSub = supabase
       .channel('orders-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, async () => {
-        const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-        if (data) setOrders(data.map(mapOrder));
+        await fetchOrders();
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Orders realtime status:', status);
+      });
 
     const notifsSub = supabase
       .channel('notifs-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, async () => {
-        const { data } = await supabase.from('notifications').select('*').order('created_at', { ascending: false });
-        if (data) setNotifications(data.map(mapNotif));
+        await fetchNotifs();
       })
       .subscribe();
 
     const staffSub = supabase
       .channel('staff-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_members' }, async () => {
-        const { data } = await supabase.from('staff_members').select('*').order('created_at', { ascending: true });
-        if (data) setStaffMembers(data.map(mapStaff));
+        await fetchStaff();
       })
       .subscribe();
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(ordersSub);
       supabase.removeChannel(notifsSub);
       supabase.removeChannel(staffSub);
