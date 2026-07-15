@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { supabase } from './lib/supabase';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { jsPDF } from 'jspdf';
@@ -736,143 +737,91 @@ export default function App() {
   // 'overview' | 'live-orders' | 'kitchen' | 'staff' | 'settings' | 'qr-station'
   const [activeTab, setActiveTab] = useState<'overview' | 'live-orders' | 'kitchen' | 'staff' | 'settings' | 'qr-station'>('staff');
 
-  // --- Live Synchronized Database State ---
-  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([
-    {
-      id: 's1',
-      name: 'Marco Andretti',
-      role: 'Chef',
-      pin: '8829',
-      status: 'Active',
-      joined: 'March 2023',
-      authorized: true,
-    },
-    {
-      id: 's2',
-      name: 'Sarah Lopez',
-      role: 'Waiter',
-      pin: '1044',
-      status: 'Active',
-      joined: 'Jan 2024',
-      authorized: true,
-    },
-    {
-      id: 's3',
-      name: 'James Kim',
-      role: 'Waiter',
-      pin: '----',
-      status: 'Deactivated',
-      joined: 'Terminated Aug 2023',
-      authorized: false,
-    },
-    {
-      id: 's4',
-      name: 'Alex Mercer',
-      role: 'Owner',
-      pin: '9999',
-      status: 'Active',
-      joined: 'Oct 2021',
-      authorized: true,
-    }
-  ]);
+  // --- Live Supabase Database State ---
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [notifications, setNotifications] = useState<PaymentNotification[]>([]);
+  const [dbLoading, setDbLoading] = useState(true);
 
-  const [orders, setOrders] = useState<Order[]>(() => {
-    const saved = localStorage.getItem('quorum_orders');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {}
-    }
-    return [
-      {
-        id: '1284',
-        table: 'Table 3',
-        items: [
-          { name: 'Signature Wagyu Burger', qty: 4, price: 650.00 },
-          { name: 'Truffle Parmesan Fries', qty: 3, price: 299.00 },
-          { name: 'Craft Mezcal Paloma', qty: 2, price: 350.00 }
-        ],
-        status: 'paid',
-        total: 4197.00,
-        time: '10:42 PM',
-        notes: 'No onions on one burger'
-      },
-      {
-        id: '1285',
-        table: 'Table 4',
-        items: [
-          { name: 'Signature Wagyu Burger', qty: 1, price: 650.00 },
-          { name: 'Truffle Parmesan Fries', qty: 1, price: 299.00 }
-        ],
-        status: 'preparing',
-        total: 949.00,
-        time: '11:38 PM',
-        notes: 'Fries extra crispy'
-      },
-      {
-        id: '1286',
-        table: 'Table 1',
-        items: [
-          { name: 'Espresso Martini Royale', qty: 2, price: 450.00 },
-          { name: 'Citrus Lemon Tart', qty: 1, price: 250.00 }
-        ],
-        status: 'ready',
-        total: 1150.00,
-        time: '11:43 PM'
-      }
-    ];
+  // Helper to map DB row → Order type
+  const mapOrder = (row: any): Order => ({
+    id: row.id,
+    table: row.table_name,
+    items: row.items,
+    status: row.status,
+    total: row.total,
+    time: row.time,
+    notes: row.notes,
+    customerName: row.customer_name
   });
 
-  // --- Real-time Notifications & Toast Feed ---
-  const [notifications, setNotifications] = useState<PaymentNotification[]>(() => {
-    const saved = localStorage.getItem('quorum_notifications');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {}
-    }
-    return [
-      {
-        id: 'n1',
-        orderId: '1284',
-        amount: 142.00,
-        table: 'Table 3',
-        timestamp: 'Just now'
-      }
-    ];
+  // Helper to map DB row → StaffMember type
+  const mapStaff = (row: any): StaffMember => ({
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    pin: row.pin,
+    status: row.status,
+    joined: row.joined,
+    authorized: row.authorized
   });
 
-  // --- Real-time LocalStorage Synchronization ---
-  useEffect(() => {
-    localStorage.setItem('quorum_orders', JSON.stringify(orders));
-  }, [orders]);
+  // Helper to map DB row → PaymentNotification type
+  const mapNotif = (row: any): PaymentNotification => ({
+    id: row.id,
+    orderId: row.order_id,
+    amount: row.amount,
+    table: row.table_name,
+    timestamp: row.timestamp,
+    type: row.type,
+    message: row.message
+  });
 
+  // --- Fetch all data from Supabase on mount ---
   useEffect(() => {
-    localStorage.setItem('quorum_notifications', JSON.stringify(notifications));
-  }, [notifications]);
-
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'quorum_orders' && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          setOrders(parsed);
-        } catch (err) {
-          console.error(err);
-        }
-      }
-      if (e.key === 'quorum_notifications' && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          setNotifications(parsed);
-        } catch (err) {
-          console.error(err);
-        }
-      }
+    const fetchAll = async () => {
+      setDbLoading(true);
+      const [{ data: staffData }, { data: ordersData }, { data: notifsData }] = await Promise.all([
+        supabase.from('staff_members').select('*').order('created_at', { ascending: true }),
+        supabase.from('orders').select('*').order('created_at', { ascending: false }),
+        supabase.from('notifications').select('*').order('created_at', { ascending: false })
+      ]);
+      if (staffData) setStaffMembers(staffData.map(mapStaff));
+      if (ordersData) setOrders(ordersData.map(mapOrder));
+      if (notifsData) setNotifications(notifsData.map(mapNotif));
+      setDbLoading(false);
     };
-    window.addEventListener('storage', handleStorageChange);
+    fetchAll();
+
+    // --- Real-time subscriptions ---
+    const ordersSub = supabase
+      .channel('orders-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, async () => {
+        const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+        if (data) setOrders(data.map(mapOrder));
+      })
+      .subscribe();
+
+    const notifsSub = supabase
+      .channel('notifs-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, async () => {
+        const { data } = await supabase.from('notifications').select('*').order('created_at', { ascending: false });
+        if (data) setNotifications(data.map(mapNotif));
+      })
+      .subscribe();
+
+    const staffSub = supabase
+      .channel('staff-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_members' }, async () => {
+        const { data } = await supabase.from('staff_members').select('*').order('created_at', { ascending: true });
+        if (data) setStaffMembers(data.map(mapStaff));
+      })
+      .subscribe();
+
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
+      supabase.removeChannel(ordersSub);
+      supabase.removeChannel(notifsSub);
+      supabase.removeChannel(staffSub);
     };
   }, []);
 
@@ -911,29 +860,29 @@ export default function App() {
   }, [staffMembers, orders]);
 
   // --- Close toast message after time delay ---
-  const handleDismissNotification = (id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
+  const handleDismissNotification = async (id: string) => {
+    await supabase.from('notifications').delete().eq('id', id);
     playBeep(400, 0.05);
   };
 
   // --- Staff Personnel Management ---
-  const handleToggleAuthorization = (id: string) => {
+  const handleToggleAuthorization = async (id: string) => {
     playBeep(900, 0.06);
-    setStaffMembers(prev => prev.map(member => {
-      if (member.id === id) {
-        const nextAuth = !member.authorized;
-        return {
-          ...member,
-          authorized: nextAuth,
-          status: nextAuth ? 'Active' : 'Deactivated',
-          pin: nextAuth ? (member.pin === '----' ? Math.floor(1000 + Math.random() * 9000).toString() : member.pin) : '----'
-        };
-      }
-      return member;
-    }));
+    const member = staffMembers.find(m => m.id === id);
+    if (!member) return;
+    const nextAuth = !member.authorized;
+    const nextPin = nextAuth
+      ? (member.pin === '----' ? Math.floor(1000 + Math.random() * 9000).toString() : member.pin)
+      : '----';
+    const nextStatus = nextAuth ? 'Active' : 'Deactivated';
+    await supabase.from('staff_members').update({
+      authorized: nextAuth,
+      status: nextStatus,
+      pin: nextPin
+    }).eq('id', id);
   };
 
-  const handleCreateStaff = (e: React.FormEvent) => {
+  const handleCreateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStaffName || !newStaffPin || newStaffPin.length !== 4) {
       playChime(false);
@@ -941,8 +890,8 @@ export default function App() {
       return;
     }
 
-    const newMember: StaffMember = {
-      id: 's' + (staffMembers.length + 1),
+    const newMember = {
+      id: 's' + Date.now(),
       name: newStaffName,
       role: newStaffRole,
       pin: newStaffImmediateAccess ? newStaffPin : '----',
@@ -951,11 +900,11 @@ export default function App() {
       authorized: newStaffImmediateAccess
     };
 
-    setStaffMembers(prev => [...prev, newMember]);
+    const { error } = await supabase.from('staff_members').insert(newMember);
+    if (error) { alert('Failed to add staff: ' + error.message); return; }
+
     setIsAddStaffOpen(false);
     playChime(true);
-
-    // Reset fields
     setNewStaffName('');
     setNewStaffPin('');
     setNewStaffRole('Chef');
@@ -1075,7 +1024,7 @@ export default function App() {
     }, 0);
   }, [guestCart]);
 
-  const handlePlaceOrder = () => {
+  const handlePlaceOrder = async () => {
     if (!guestName.trim()) {
       playChime(false);
       alert('Please enter your name in the cart area to place your order!');
@@ -1111,14 +1060,24 @@ export default function App() {
       customerName: guestName.trim()
     };
 
-    setOrders(prev => [...prev, newOrder]);
+    const { error } = await supabase.from('orders').insert({
+      id: newOrder.id,
+      table_name: newOrder.table,
+      items: newOrder.items,
+      status: newOrder.status,
+      total: newOrder.total,
+      time: newOrder.time,
+      notes: newOrder.notes,
+      customer_name: newOrder.customerName
+    });
+    if (error) { alert('Failed to place order: ' + error.message); return; }
     playChime(true);
-    
-    // Save to tracking state & localStorage
+
+    // Save tracking state
     localStorage.setItem('quorum_active_order_id', uniqueId);
     localStorage.setItem('quorum_guest_name', guestName.trim());
     setActiveTrackingOrderId(uniqueId);
-    
+
     // Reset guest cart
     setGuestCart({});
     setGuestNotes('');
@@ -1158,7 +1117,7 @@ export default function App() {
     }, 0);
   }, [manualOrderCart]);
 
-  const handleManualOrderSubmit = () => {
+  const handleManualOrderSubmit = async () => {
     if (Object.keys(manualOrderCart).length === 0) {
       playChime(false);
       return;
@@ -1181,60 +1140,67 @@ export default function App() {
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     };
 
-    setOrders(prev => [...prev, newOrder]);
+    const { error } = await supabase.from('orders').insert({
+      id: newOrder.id,
+      table_name: newOrder.table,
+      items: newOrder.items,
+      status: newOrder.status,
+      total: newOrder.total,
+      time: newOrder.time,
+      notes: newOrder.notes || null,
+      customer_name: null
+    });
+    if (error) { alert('Failed to submit order: ' + error.message); return; }
     setIsNewManualOrderOpen(false);
     setManualOrderCart({});
     playChime(true);
   };
 
   // --- Live Workflow Interactions ---
-  const handleStartPreparing = (orderId: string) => {
+  const handleStartPreparing = async (orderId: string) => {
     playBeep(750, 0.05);
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'preparing' } : o));
+    await supabase.from('orders').update({ status: 'preparing' }).eq('id', orderId);
   };
 
-  const handleMarkReady = (orderId: string) => {
+  const handleMarkReady = async (orderId: string) => {
     playChime(true);
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'ready' } : o));
+    await supabase.from('orders').update({ status: 'ready' }).eq('id', orderId);
 
     const targetOrder = orders.find(o => o.id === orderId);
     if (targetOrder) {
-      const newNotif: PaymentNotification = {
-        id: 'kds-' + Date.now() + '-' + Math.random().toString(),
-        orderId: targetOrder.id,
-        table: targetOrder.table,
+      await supabase.from('notifications').insert({
+        id: 'kds-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+        order_id: targetOrder.id,
+        table_name: targetOrder.table,
         timestamp: 'Just now',
         type: 'kitchen-ready',
         message: `Notification for Waiter: Order #${targetOrder.id} is Ready! Please take the meal from the kitchen.`
-      };
-      setNotifications(prev => [newNotif, ...prev]);
+      });
     }
   };
 
-  const handleMarkServed = (orderId: string) => {
+  const handleMarkServed = async (orderId: string) => {
     playChime(true);
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'served' } : o));
+    await supabase.from('orders').update({ status: 'served' }).eq('id', orderId);
   };
 
-  const handleVerifyPayment = (orderId: string) => {
+  const handleVerifyPayment = async (orderId: string) => {
     playBeep(1200, 0.08);
     setTimeout(() => playBeep(1600, 0.12), 80);
 
     const targetOrder = orders.find(o => o.id === orderId);
     if (!targetOrder) return;
 
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'paid' } : o));
+    await supabase.from('orders').update({ status: 'paid' }).eq('id', orderId);
 
-    // Inject immediate live floating notification/toast
-    const newNotif: PaymentNotification = {
-      id: 'n' + (notifications.length + 1) + Math.random().toString(),
-      orderId: targetOrder.id,
+    await supabase.from('notifications').insert({
+      id: 'n-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+      order_id: targetOrder.id,
       amount: targetOrder.total,
-      table: targetOrder.table,
-      timestamp: 'Just verified'
-    };
-
-    setNotifications(prev => [newNotif, ...prev]);
+      table_name: targetOrder.table,
+      timestamp: 'Just verified',
+      type: 'payment'
+    });
   };
 
   // Filtered list of personnel based on directory search bar
