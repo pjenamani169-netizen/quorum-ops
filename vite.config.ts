@@ -11,6 +11,11 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
+      // Force service worker to update immediately
+      workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+      },
 
       manifest: {
         name: 'Quorum Ops',

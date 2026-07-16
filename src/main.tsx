@@ -1,4 +1,4 @@
-// FIRST: Sanitize all fetch request headers
+// FIRST: Sanitize all request headers (fetch and XMLHttpRequest)
 const sanitizeHeaderValue = (name: string, value: string): string => {
   let hasNonIso = false;
   const sanitized = value
@@ -7,7 +7,7 @@ const sanitizeHeaderValue = (name: string, value: string): string => {
       const code = char.charCodeAt(0);
       if (code > 255) {
         hasNonIso = true;
-        // Instead of escaping, we can also just remove the problematic character
+        // Remove problematic characters entirely
         return '';
       }
       return char;
@@ -45,25 +45,49 @@ const sanitizeHeaders = (headers: HeadersInit | undefined): HeadersInit | undefi
   }
 };
 
-// Intercept all fetch requests
-const originalFetch = window.fetch;
-window.fetch = function(input: RequestInfo | URL, init?: RequestInit) {
-  // Sanitize headers from init
-  if (init) {
-    init.headers = sanitizeHeaders(init.headers);
-  }
-  
-  // If input is a Request object, sanitize its headers too
-  if (input instanceof Request) {
-    const sanitizedHeaders = sanitizeHeaders(input.headers);
-    // Create a new Request with sanitized headers
-    input = new Request(input, { headers: sanitizedHeaders });
-  }
-  
-  return originalFetch.call(this, input, init);
-};
+// 1. Intercept all fetch requests
+if (typeof window.fetch !== 'undefined') {
+  const originalFetch = window.fetch;
+  window.fetch = function(input: RequestInfo | URL, init?: RequestInit) {
+    console.log('[Header Sanitizer] Intercepted fetch request');
+    
+    // Sanitize headers from init
+    if (init) {
+      init.headers = sanitizeHeaders(init.headers);
+    }
+    
+    // If input is a Request object, sanitize its headers too
+    if (input instanceof Request) {
+      const sanitizedHeaders = sanitizeHeaders(input.headers);
+      // Create a new Request with sanitized headers
+      input = new Request(input, { headers: sanitizedHeaders });
+    }
+    
+    return originalFetch.call(this, input, init);
+  };
+  console.log('[Header Sanitizer] Fetch interceptor installed');
+}
 
-console.log('[Header Sanitizer] Fetch interceptor installed');
+// 2. Intercept all XMLHttpRequest requests
+if (typeof XMLHttpRequest !== 'undefined') {
+  const originalOpen = XMLHttpRequest.prototype.open;
+  const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+  
+  XMLHttpRequest.prototype.open = function(...args: any[]) {
+    console.log('[Header Sanitizer] Intercepted XMLHttpRequest.open');
+    // Store headers set on this XHR instance
+    (this as any)._headersToSanitize = {};
+    return originalOpen.apply(this, args);
+  };
+  
+  XMLHttpRequest.prototype.setRequestHeader = function(name: string, value: string) {
+    console.log('[Header Sanitizer] Intercepted XMLHttpRequest.setRequestHeader', { name, value });
+    const sanitizedValue = sanitizeHeaderValue(name, value);
+    return originalSetRequestHeader.call(this, name, sanitizedValue);
+  };
+  
+  console.log('[Header Sanitizer] XMLHttpRequest interceptor installed');
+}
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
