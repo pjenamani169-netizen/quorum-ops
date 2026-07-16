@@ -1043,6 +1043,7 @@ export default function App() {
   }, [guestCart]);
 
   const handlePlaceOrder = async () => {
+    console.log('[handlePlaceOrder] Starting order placement');
     if (!guestName.trim()) {
       playChime(false);
       alert('Please enter your name in the cart area to place your order!');
@@ -1063,9 +1064,11 @@ export default function App() {
         price: item.price
       };
     });
+    console.log('[handlePlaceOrder] Order items:', orderItems);
 
     // Generate custom 8-character premium hex ID like the image: #83788D6F
     const uniqueId = Array.from({ length: 8 }, () => Math.floor(Math.random() * 16).toString(16).toUpperCase()).join('');
+    console.log('[handlePlaceOrder] Unique ID:', uniqueId);
 
     const newOrder: Order = {
       id: uniqueId,
@@ -1077,8 +1080,10 @@ export default function App() {
       notes: guestNotes,
       customerName: guestName.trim()
     };
+    console.log('[handlePlaceOrder] New order object:', newOrder);
 
-    const { error } = await supabase.from('orders').insert({
+    console.log('[handlePlaceOrder] Calling Supabase insert');
+    const { data, error } = await supabase.from('orders').insert({
       id: newOrder.id,
       table_name: newOrder.table,
       items: newOrder.items,
@@ -1087,8 +1092,14 @@ export default function App() {
       time: newOrder.time,
       notes: newOrder.notes,
       customer_name: newOrder.customerName
-    });
-    if (error) { alert('Failed to place order: ' + error.message); return; }
+    }).select();
+    console.log('[handlePlaceOrder] Supabase response:', { data, error });
+
+    if (error) { 
+      console.error('[handlePlaceOrder] Supabase error:', error);
+      alert('Failed to place order: ' + error.message); 
+      return; 
+    }
     playChime(true);
 
     // Save tracking state
