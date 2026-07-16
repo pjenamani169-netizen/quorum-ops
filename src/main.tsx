@@ -1,94 +1,58 @@
-// FIRST: Sanitize all request headers (fetch and XMLHttpRequest)
-const sanitizeHeaderValue = (name: string, value: string): string => {
-  let hasNonIso = false;
-  const sanitized = value
-    .split('')
-    .map(char => {
+// ABSOLUTE FIRST: Monkey-patch Headers to catch and fix the issue!
+(function() {
+  'use strict';
+
+  // Check if Headers exists
+  if (typeof Headers === 'undefined') return;
+
+  const originalSet = Headers.prototype.set;
+  const originalAppend = Headers.prototype.append;
+
+  // Helper: Check and sanitize a single header value
+  function sanitizeValue(name: string, value: string) {
+    // Check if value has any non-ISO-8859-1 characters (code > 255)
+    let hasNonIso = false;
+    const sanitized = value.split('').map(char => {
       const code = char.charCodeAt(0);
       if (code > 255) {
         hasNonIso = true;
-        // Remove problematic characters entirely
+        // Replace with empty string instead of escaping
         return '';
       }
       return char;
-    })
-    .join('');
-  
-  if (hasNonIso) {
-    console.warn(`[Header Sanitizer] Non-ISO-8859-1 character found in header "${name}":`, {
-      originalValue: value,
-      sanitizedValue: sanitized
-    });
-  }
-  
-  return sanitized;
-};
+    }).join('');
 
-// Sanitize a Headers object
-const sanitizeHeaders = (headers: HeadersInit | undefined): HeadersInit | undefined => {
-  if (!headers) return headers;
-  
-  if (headers instanceof Headers) {
-    const sanitized = new Headers();
-    headers.forEach((value, name) => {
-      sanitized.set(name, sanitizeHeaderValue(name, value));
-    });
-    return sanitized;
-  } else if (Array.isArray(headers)) {
-    return headers.map(([name, value]) => [name, sanitizeHeaderValue(name, value)]);
-  } else {
-    const sanitized: Record<string, string> = {};
-    for (const [name, value] of Object.entries(headers)) {
-      sanitized[name] = sanitizeHeaderValue(name, value);
+    if (hasNonIso) {
+      console.error(
+        '[Headers Patch] Found non-ISO-8859-1 character in header!',
+        {
+          headerName: name,
+          originalValue: value,
+          sanitizedValue: sanitized,
+          stackTrace: new Error().stack
+        }
+      );
     }
+
     return sanitized;
   }
-};
 
-// 1. Intercept all fetch requests
-if (typeof window.fetch !== 'undefined') {
-  const originalFetch = window.fetch;
-  window.fetch = function(input: RequestInfo | URL, init?: RequestInit) {
-    console.log('[Header Sanitizer] Intercepted fetch request');
-    
-    // Sanitize headers from init
-    if (init) {
-      init.headers = sanitizeHeaders(init.headers);
-    }
-    
-    // If input is a Request object, sanitize its headers too
-    if (input instanceof Request) {
-      const sanitizedHeaders = sanitizeHeaders(input.headers);
-      // Create a new Request with sanitized headers
-      input = new Request(input, { headers: sanitizedHeaders });
-    }
-    
-    return originalFetch.call(this, input, init);
+  // Patch set()
+  Headers.prototype.set = function(name: string, value: string) {
+    const sanitized = sanitizeValue(name, value);
+    return originalSet.call(this, name, sanitized);
   };
-  console.log('[Header Sanitizer] Fetch interceptor installed');
-}
 
-// 2. Intercept all XMLHttpRequest requests
-if (typeof XMLHttpRequest !== 'undefined') {
-  const originalOpen = XMLHttpRequest.prototype.open;
-  const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
-  
-  XMLHttpRequest.prototype.open = function(...args: any[]) {
-    console.log('[Header Sanitizer] Intercepted XMLHttpRequest.open');
-    // Store headers set on this XHR instance
-    (this as any)._headersToSanitize = {};
-    return originalOpen.apply(this, args);
+  // Patch append()
+  Headers.prototype.append = function(name: string, value: string) {
+    const sanitized = sanitizeValue(name, value);
+    return originalAppend.call(this, name, sanitized);
   };
-  
-  XMLHttpRequest.prototype.setRequestHeader = function(name: string, value: string) {
-    console.log('[Header Sanitizer] Intercepted XMLHttpRequest.setRequestHeader', { name, value });
-    const sanitizedValue = sanitizeHeaderValue(name, value);
-    return originalSetRequestHeader.call(this, name, sanitizedValue);
-  };
-  
-  console.log('[Header Sanitizer] XMLHttpRequest interceptor installed');
-}
 
+  console.log('[Headers Patch] Headers.set and Headers.append patched successfully');
+})();
+
+// Now proceed with the app
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.tsx';
